@@ -1,21 +1,16 @@
 """
-Each strategy function receives a match row dict and returns a dict
-with columns to add to that row for that strategy.
+Betting strategies for backtesting.
 
-Strategies simulate betting on 1X2 only (home / draw / away).
-The model picks the outcome with highest probability as the suggested bet.
+Market odds simulation:
+  implied_odd = 1 / prob  (fair odds, no margin)
+  market_odd  = implied / 1.05  (bookie takes 5% margin — they offer LESS than fair)
 
-Columns added per strategy:
-  {prefix}_bet:        "H", "D", "A", or "NO_BET"
-  {prefix}_stake:      amount wagered (0 if no bet)
-  {prefix}_odds:       implied odds used
-  {prefix}_profit:     net profit/loss for this match
-  {prefix}_correct:    True/False if bet was correct
+Value bet exists when: model_prob > 1 / market_odd
+i.e. we think it's more likely than what the bookie's price implies.
 """
 
 
 def _get_best_outcome(row):
-    """Returns the outcome the model is most confident about."""
     probs = {
         "H": row["prob_home"] / 100,
         "D": row["prob_draw"] / 100,
@@ -32,9 +27,10 @@ def _get_best_outcome(row):
 
 def _get_value_outcome(row):
     """
-    Returns the outcome with the highest positive expected value.
-    Simulates market odds by adding a 10% bookmaker margin on top of our implied odds.
-    Value = (model_prob * market_odds) - 1 > 0
+    Value bet: model probability > implied probability of market odds.
+    Market odds = implied_odd / 1.05 (bookie takes 5% margin, so offers less).
+    EV = (model_prob * market_odds) - 1
+    Only bet if EV > 0.
     """
     outcomes = {
         "H": (row["prob_home"] / 100, row["implied_home"]),
@@ -42,60 +38,53 @@ def _get_value_outcome(row):
         "A": (row["prob_away"] / 100, row["implied_away"]),
     }
 
-    best_value = -999.0
+    best_ev      = -999.0
     best_outcome = None
-    best_prob = None
-    best_odds = None
+    best_prob    = None
+    best_odds    = None
 
     for outcome, (prob, implied) in outcomes.items():
-        market_odds = implied * 1.10
+        # Bookie offers LESS than fair — they keep the margin
+        market_odds = implied / 1.05
         ev = (prob * market_odds) - 1
-        if ev > best_value:
-            best_value = ev
+        if ev > best_ev:
+            best_ev      = ev
             best_outcome = outcome
-            best_prob = prob
-            best_odds = market_odds
+            best_prob    = prob
+            best_odds    = market_odds
 
-    if best_value > 0:
-        return best_outcome, best_prob, best_odds, best_value
-    return None, None, None, best_value
+    if best_ev > 0:
+        return best_outcome, best_prob, best_odds, best_ev
+    return None, None, None, best_ev
 
 
 def _kelly_stake(prob: float, odds: float, bankroll: float, fraction: float) -> float:
-    """
-    Fractional Kelly Criterion stake, capped at 20% of bankroll.
-    kelly_pct = (prob * odds - 1) / (odds - 1)
-    """
     if odds <= 1:
         return 0.0
     kelly_pct = ((prob * odds) - 1) / (odds - 1)
     kelly_pct = max(0.0, kelly_pct) * fraction
     stake = bankroll * kelly_pct
-    stake = min(stake, bankroll * 0.20)
-    return round(stake, 2)
+    return round(min(stake, bankroll * 0.20), 2)
 
 
 def _profit(stake: float, odds: float, correct: bool) -> float:
     if stake == 0:
         return 0.0
-    if correct:
-        return round(stake * (odds - 1), 2)
-    return round(-stake, 2)
+    return round(stake * (odds - 1), 2) if correct else round(-stake, 2)
 
 
 # ── Strategy 1: Threshold + Fixed stake ──────────────────────────────────────
 
 def strategy_threshold_fixed(row: dict, threshold: float, fixed_stake: float) -> dict:
     outcome, prob, odds = _get_best_outcome(row)
-    bet = outcome if prob >= threshold else "NO_BET"
+    bet   = outcome if prob >= threshold else "NO_BET"
     stake = fixed_stake if bet != "NO_BET" else 0.0
     correct = (bet == row["actual_result"]) if bet != "NO_BET" else False
-    profit = _profit(stake, odds, correct)
     return {
         "th_fixed_bet":     bet,
         "th_fixed_stake":   stake,
         "th_fixed_odds":    round(odds, 2) if bet != "NO_BET" else 0.0,
-        "th_fixed_profit":  profit,
+        "th_fixed_profit":  _profit(stake, odds, correct),
         "th_fixed_correct": correct,
     }
 
@@ -113,14 +102,13 @@ def strategy_threshold_kelly(row: dict, threshold: float, kelly_fraction: float,
             "th_kelly_profit":  0.0,
             "th_kelly_correct": False,
         }
-    stake = _kelly_stake(prob, odds, bankroll, kelly_fraction)
+    stake   = _kelly_stake(prob, odds, bankroll, kelly_fraction)
     correct = outcome == row["actual_result"]
-    profit = _profit(stake, odds, correct)
     return {
         "th_kelly_bet":     outcome,
         "th_kelly_stake":   stake,
         "th_kelly_odds":    round(odds, 2),
-        "th_kelly_profit":  profit,
+        "th_kelly_profit":  _profit(stake, odds, correct),
         "th_kelly_correct": correct,
     }
 
@@ -136,15 +124,14 @@ def strategy_valuebets_fixed(row: dict, fixed_stake: float) -> dict:
             "vb_fixed_odds":    0.0,
             "vb_fixed_profit":  0.0,
             "vb_fixed_correct": False,
-            "vb_fixed_ev":      round(ev, 4) if ev is not None else 0.0,
+            "vb_fixed_ev":      0.0,  # fixed: no variable fantasma
         }
     correct = outcome == row["actual_result"]
-    profit = _profit(fixed_stake, odds, correct)
     return {
         "vb_fixed_bet":     outcome,
         "vb_fixed_stake":   fixed_stake,
         "vb_fixed_odds":    round(odds, 2),
-        "vb_fixed_profit":  profit,
+        "vb_fixed_profit":  _profit(fixed_stake, odds, correct),
         "vb_fixed_correct": correct,
         "vb_fixed_ev":      round(ev, 4),
     }
@@ -162,16 +149,15 @@ def strategy_valuebets_kelly(row: dict, kelly_fraction: float,
             "vb_kelly_odds":    0.0,
             "vb_kelly_profit":  0.0,
             "vb_kelly_correct": False,
-            "vb_kelly_ev":      round(ev, 4) if ev is not None else 0.0,
+            "vb_kelly_ev":      0.0,  # fixed: no variable fantasma
         }
-    stake = _kelly_stake(prob, odds, bankroll, kelly_fraction)
+    stake   = _kelly_stake(prob, odds, bankroll, kelly_fraction)
     correct = outcome == row["actual_result"]
-    profit = _profit(stake, odds, correct)
     return {
         "vb_kelly_bet":     outcome,
         "vb_kelly_stake":   stake,
         "vb_kelly_odds":    round(odds, 2),
-        "vb_kelly_profit":  profit,
+        "vb_kelly_profit":  _profit(stake, odds, correct),
         "vb_kelly_correct": correct,
         "vb_kelly_ev":      round(ev, 4),
     }

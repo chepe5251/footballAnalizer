@@ -3,12 +3,10 @@ from scipy.stats import poisson
 
 FALLBACK_HOME_AVG = 1.5
 FALLBACK_AWAY_AVG = 1.2
-HOME_ADVANTAGE = 1.15
 RHO = 0.1  # Dixon-Coles low-score correction
 
 
 def _dixon_coles_correction(home_goals, away_goals, lambda_h, lambda_a, rho):
-    """Low-score correction factor for 0-0, 1-0, 0-1, 1-1."""
     if home_goals == 0 and away_goals == 0:
         return 1 - lambda_h * lambda_a * rho
     if home_goals == 1 and away_goals == 0:
@@ -24,23 +22,30 @@ def _attack_defense_strengths(stats: dict):
     league_home = stats.get("league_avg_goals_home") or FALLBACK_HOME_AVG
     league_away = stats.get("league_avg_goals_away") or FALLBACK_AWAY_AVG
 
-    h_scored  = stats.get("home_goals_scored_avg")
+    # Use a neutral league average as baseline to avoid double-counting home advantage
+    # league_home already has home advantage baked in, so we use the total average
+    league_avg = (league_home + league_away) / 2
+
+    h_scored   = stats.get("home_goals_scored_avg")
     h_conceded = stats.get("home_goals_conceded_avg")
-    a_scored  = stats.get("away_goals_scored_avg")
+    a_scored   = stats.get("away_goals_scored_avg")
     a_conceded = stats.get("away_goals_conceded_avg")
 
     if all(v is not None for v in [h_scored, h_conceded, a_scored, a_conceded]):
-        home_attack  = h_scored  / league_home
-        home_defense = h_conceded / league_away
-        away_attack  = a_scored  / league_away
-        away_defense = a_conceded / league_home
+        # Normalize against neutral average — no extra HOME_ADVANTAGE multiplier
+        home_attack  = h_scored   / league_avg
+        home_defense = h_conceded / league_avg
+        away_attack  = a_scored   / league_avg
+        away_defense = a_conceded / league_avg
     else:
-        home_attack  = league_home / league_home
-        home_defense = league_away / league_away
-        away_attack  = league_away / league_away
-        away_defense = league_home / league_home
+        home_attack  = 1.0
+        home_defense = 1.0
+        away_attack  = 1.0
+        away_defense = 1.0
 
-    lambda_home = home_attack * away_defense * league_home * HOME_ADVANTAGE
+    # lambda = attack strength * opponent defense weakness * league baseline
+    # Home advantage comes naturally from the data (home teams score more)
+    lambda_home = home_attack * away_defense * league_home
     lambda_away = away_attack * home_defense * league_away
 
     lambda_home = max(0.1, lambda_home)
@@ -56,7 +61,6 @@ def _build_score_matrix(lambda_home: float, lambda_away: float, max_goals: int =
             raw = poisson.pmf(i, lambda_home) * poisson.pmf(j, lambda_away)
             correction = _dixon_coles_correction(i, j, lambda_home, lambda_away, RHO)
             matrix[i][j] = raw * correction
-    # Renormalize after correction
     matrix /= matrix.sum()
     return matrix
 
@@ -106,38 +110,33 @@ def calculate_poisson_probabilities(stats: dict) -> dict:
     prob_over35 = float(sum(
         matrix[i][j] for i in range(9) for j in range(9) if i + j > 3
     ))
-    prob_under25 = 1.0 - prob_over25
-    prob_under35 = 1.0 - prob_over35
-
     prob_btts_yes = float(sum(
         matrix[i][j] for i in range(1, 9) for j in range(1, 9)
     ))
-    prob_btts_no = 1.0 - prob_btts_yes
 
+    # Implied odds WITH bookmaker margin (5%) — represents fair model odds
+    # The bookie will offer LESS than this (their margin on top)
     margin = 0.05
-
     def implied_odd(prob):
         if prob <= 0:
             return 999.0
         return round(1 / (prob * (1 + margin)), 2)
 
-    confidence = assess_model_confidence(stats)
-
     return {
-        "lambda_home":   round(lambda_home, 3),
-        "lambda_away":   round(lambda_away, 3),
-        "prob_home":     round(prob_home_win * 100),
-        "prob_draw":     round(prob_draw     * 100),
-        "prob_away":     round(prob_away_win * 100),
-        "prob_over25":   round(prob_over25   * 100),
-        "prob_under25":  round(prob_under25  * 100),
-        "prob_over35":   round(prob_over35   * 100),
-        "prob_under35":  round(prob_under35  * 100),
-        "prob_btts_yes": round(prob_btts_yes * 100),
-        "prob_btts_no":  round(prob_btts_no  * 100),
-        "implied_home":  implied_odd(prob_home_win),
-        "implied_draw":  implied_odd(prob_draw),
-        "implied_away":  implied_odd(prob_away_win),
+        "lambda_home":       round(lambda_home, 3),
+        "lambda_away":       round(lambda_away, 3),
+        "prob_home":         round(prob_home_win * 100),
+        "prob_draw":         round(prob_draw     * 100),
+        "prob_away":         round(prob_away_win * 100),
+        "prob_over25":       round(prob_over25   * 100),
+        "prob_under25":      round((1 - prob_over25) * 100),
+        "prob_over35":       round(prob_over35   * 100),
+        "prob_under35":      round((1 - prob_over35) * 100),
+        "prob_btts_yes":     round(prob_btts_yes * 100),
+        "prob_btts_no":      round((1 - prob_btts_yes) * 100),
+        "implied_home":      implied_odd(prob_home_win),
+        "implied_draw":      implied_odd(prob_draw),
+        "implied_away":      implied_odd(prob_away_win),
         "most_likely_score": find_most_likely_score(matrix),
-        "model_confidence":  confidence,
+        "model_confidence":  assess_model_confidence(stats),
     }
