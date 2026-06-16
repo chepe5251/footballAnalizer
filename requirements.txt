@@ -1,0 +1,22 @@
+# LLM
+ollama>=0.4.0
+
+# Data collection
+soccerdata>=1.8.0
+
+# Scheduling
+apscheduler>=3.10.0
+
+# HTTP (Telegram + Ollama REST)
+httpx>=0.24.0
+
+# Statistical model
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Data manipulation
+pandas>=2.0.0
+
+# Configuration
+python-dotenv>=1.0.0
+pytz>=2024.1

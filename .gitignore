@@ -1,0 +1,33 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ─────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── Secrets — never commit ────────────────────────────────────────────────────
+.env
+
+# ── Project runtime artifacts ────────────────────────────────────────────────
+logs/
+backtest_output/
+
+# ── soccerdata cache (can be rebuilt, adds significant size to the repo) ─────
+.soccerdata/
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
