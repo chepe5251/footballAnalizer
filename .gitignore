@@ -37,3 +37,9 @@ downloaded_files/
 logs/
 venv/
 __pycache__/
+.env.save
+downloaded_files/
+*.deb
+logs/
+venv/
+__pycache__/
