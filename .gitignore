@@ -31,3 +31,9 @@ backtest_output/
 *.swp
 *.swo
 .DS_Store
+.env.save
+downloaded_files/
+*.deb
+logs/
+venv/
+__pycache__/
