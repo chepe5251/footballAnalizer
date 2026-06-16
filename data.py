@@ -418,7 +418,17 @@ def get_team_stats(home_team: str, away_team: str, league_id: str, season: str) 
 
 
 if __name__ == "__main__":
+    print("Testing Sofascore API...")
     matches = get_todays_matches()
-    print(f"\n{len(matches)} match(es) found today:\n")
-    for m in matches:
-        print(m)
+    print(f"Found {len(matches)} matches today")
+    for m in matches[:3]:
+        print(f"  {m['home']} vs {m['away']} — {m['competition']}")
+
+    if matches:
+        print("\nTesting stats for first match...")
+        m = matches[0]
+        stats = get_team_stats(m["home"], m["away"], m["league_id"], m["season"])
+        print(f"  Home avg goals scored: {stats['home_goals_scored_avg']}")
+        print(f"  Away avg goals scored: {stats['away_goals_scored_avg']}")
+        print(f"  H2H matches found: {len(stats['h2h'])}")
+        print(f"  Home last 5: {stats['home_last5']}")

@@ -2,7 +2,7 @@
 
 Automated daily football match analysis delivered to Telegram, running entirely on a self-hosted Linux VPS with no external AI API costs.
 
-Every morning at **8:00 AM CST** the agent fetches today's fixtures from 11 competitions via [soccerdata/FBref](https://soccerdata.readthedocs.io), computes outcome probabilities with a **Poisson + Dixon-Coles model**, sends the data to a **local Ollama LLM** for narrative analysis in Spanish, and delivers two structured Telegram messages per match.
+Every morning at **8:00 AM CST** the agent fetches today's fixtures from 11 competitions via **Sofascore's public JSON API**, computes outcome probabilities with a **Poisson + Dixon-Coles model**, sends the data to a **local Ollama LLM** for narrative analysis in Spanish, and delivers two structured Telegram messages per match.
 
 ---
 
@@ -14,6 +14,7 @@ Every morning at **8:00 AM CST** the agent fetches today's fixtures from 11 comp
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Running the Agent](#running-the-agent)
+- [Data Source — Sofascore](#data-source--sofascore)
 - [Backtesting](#backtesting)
 - [VPS Deployment (systemd)](#vps-deployment-systemd)
 - [Project Structure](#project-structure)
@@ -31,10 +32,11 @@ Every morning at **8:00 AM CST** the agent fetches today's fixtures from 11 comp
                                     │
               ┌─────────────────────▼──────────────────────┐
               │                  data.py                    │
-              │  soccerdata / FBref                         │
-              │  • Today's fixtures (11 competitions)       │
-              │  • Rolling team stats (last 20 matches)     │
-              │  • Standings · H2H · league averages        │
+              │  Sofascore public REST API (no browser)     │
+              │  • Today's fixtures, matched by exact        │
+              │    tournament ID (11 competitions)           │
+              │  • Form (last 5) · season averages · H2H    │
+              │  • Standings · league-wide goal averages    │
               └─────────────────────┬──────────────────────┘
                                     │  stats dict
               ┌─────────────────────▼──────────────────────┐
@@ -67,11 +69,14 @@ Every morning at **8:00 AM CST** the agent fetches today's fixtures from 11 comp
               └────────────────────────────────────────────┘
 ```
 
+> The **backtesting module** is a separate offline pipeline and intentionally uses a different data source (FBref via `soccerdata`) — see [Backtesting](#backtesting) for why.
+
 ---
 
 ## Features
 
 - **11 competitions** — Premier League, La Liga, Serie A, Bundesliga, Ligue 1, Champions League, Europa League, MLS, Liga MX, Eredivisie, Primeira Liga
+- **Browser-free data layer** — talks directly to Sofascore's REST API over HTTPS; no Chrome/ChromeDriver/Selenium to install or keep working on a headless VPS
 - **Poisson + Dixon-Coles model** — attack/defense strength indices, home advantage factor, low-score correction for 0-0 / 1-0 / 0-1 / 1-1
 - **Full probability surface** — 1X2 with implied odds, Over/Under 2.5 & 3.5, BTTS, most likely scoreline, λ expected goals
 - **Local LLM via Ollama** — no external API calls, no per-token costs; falls back to stats-only output when Ollama is unavailable
@@ -84,11 +89,14 @@ Every morning at **8:00 AM CST** the agent fetches today's fixtures from 11 comp
 
 | Requirement | Notes |
 |---|---|
-| Python 3.10+ | 3.11 recommended |
+| Python 3.10+ | 3.12 tested |
 | [Ollama](https://ollama.com) | Installed and running (`ollama serve`) |
 | An Ollama model | See [Configuration](#configuration) for recommendations |
 | Telegram Bot | Created via [@BotFather](https://t.me/BotFather) |
 | Linux VPS | Ubuntu 22.04+ recommended |
+| Outbound HTTPS to `api.sofascore.com` | No browser, no API key — just network access |
+
+No Chrome/Chromium install is required for the live daily pipeline. (The backtesting module still depends on Chrome — see [Backtesting](#backtesting).)
 
 ---
 
@@ -150,6 +158,12 @@ python main.py
 
 The pipeline runs immediately on first start, then schedules daily at 8:00 AM CST.
 
+You can also sanity-check the data layer on its own, without touching Ollama or Telegram:
+
+```bash
+python data.py
+```
+
 ---
 
 ## Configuration
@@ -163,6 +177,8 @@ Copy `.env.example` to `.env` and set the following variables:
 | `TELEGRAM_BOT_TOKEN` | **Yes** | — | Token from @BotFather (`123456:ABC-DEF...`). |
 | `TELEGRAM_CHAT_ID` | **Yes** | — | Target chat ID. Can be a user ID or group/channel ID (prefix `-100` for channels). |
 | `LOG_LEVEL` | No | `INFO` | Python log level: `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
+
+Sofascore needs no API key, token, or credentials of any kind — `config.py` has nothing to configure for the data layer.
 
 ### Finding your Telegram Chat ID
 
@@ -189,9 +205,56 @@ The agent always executes the pipeline once at startup before entering the sched
 
 ---
 
+## Data Source — Sofascore
+
+`data.py` calls Sofascore's public REST API (`https://api.sofascore.com/api/v1/`) directly, routed through `soccerdata`'s `Sofascore` reader so requests still benefit from its session reuse, retry-on-failure, and TLS-fingerprint handling (`tls_requests`). No browser is involved — this is the opposite of `soccerdata.FBref`, which drives a real headless Chrome instance and is the original reason this project moved away from FBref for the live pipeline.
+
+### Why exact tournament IDs, not league names
+
+`get_todays_matches()` filters Sofascore's worldwide daily event list down to our 11 competitions by **exact numeric `uniqueTournament` ID**, not by fuzzy-matching tournament name strings. Many countries have generically-named top divisions — "Premier League," "Primeira/Primera Liga," etc. — so name-based matching produces false positives (e.g. a Canadian Premier League fixture being misfiled as the English Premier League). The ID map lives at the top of `data.py`:
+
+| Competition | Sofascore tournament ID(s) |
+|---|---|
+| Premier League | 17 |
+| La Liga | 8 |
+| Serie A | 23 |
+| Bundesliga | 35 |
+| Ligue 1 | 34 |
+| Champions League | 7 |
+| Europa League | 679 |
+| MLS | 242 |
+| Liga MX | 11621 (Apertura), 11620 (Clausura) |
+| Eredivisie | 37 |
+| Primeira Liga | 238 |
+
+Liga MX has two IDs because Sofascore models the Mexican season as two separate tournaments per year rather than one continuous one.
+
+Team names are matched with `difflib.get_close_matches` (fuzzy, cutoff 0.6) — that's a safe use case, since spelling variants of the same team ("Man United" vs "Manchester United") need to resolve to the same row, and the candidate pool is always scoped to a single league's roster rather than the whole world.
+
+### Adding a competition
+
+1. Find the country's Sofascore category ID: `GET /api/v1/sport/football/categories`.
+2. List that category's tournaments: `GET /api/v1/category/{category_id}/unique-tournaments`.
+3. Add the resulting `uniqueTournament` ID to `COMPETITIONS` in `data.py`.
+
+### Off-season behavior
+
+`get_todays_matches()` correctly returns `[]` when none of the 11 tracked competitions have fixtures that day (e.g. mid-June, when most European top flights are between seasons). This is expected behavior, not a bug — the daily pipeline sends a "no matches today" notification instead of erroring out.
+
+### Rate limiting and resilience
+
+- Every Sofascore call sleeps `2` seconds before the next one (`time.sleep(2)`), since `soccerdata` applies no automatic delay for this reader by default.
+- Every individual API call is wrapped in its own try/except; a failure at any stage (today's schedule, season resolution, rounds, standings) is logged as a warning and falls back to partial or default stats rather than crashing the pipeline.
+- `get_team_stats()` always returns the full stats dict shape, even when every field had to fall back to its default — `model.py` and `analyzer.py` can rely on the keys always being present.
+- An in-process cache avoids re-fetching an entire season's worth of rounds more than once per run when several matches from the same league are analyzed back-to-back.
+
+---
+
 ## Backtesting
 
 The backtesting module replays historical seasons using the same Poisson model, with a strict **rolling-window approach** (past 20 matches only) to prevent data leakage. It evaluates four betting strategies and exports three CSV files.
+
+> **Note:** unlike the live daily pipeline, the backtester (`backtest/runner.py`) still fetches historical data from **FBref** via `soccerdata.FBref`, not Sofascore. This is a deliberate, pre-existing split: FBref's season-schedule scraper is the data source the backtest engine and its rolling-stats logic were originally built and validated against, and it was out of scope for the Sofascore migration to also rewrite the backtester. If you run backtests on a headless VPS, you'll need a working Chrome/Chromedriver setup for this module specifically — see [Troubleshooting](#troubleshooting).
 
 ### Strategies
 
@@ -329,9 +392,10 @@ footballAnalizer/
 ├── main.py              Entry point. APScheduler cron (8 AM CST) + immediate
 │                        first run on startup. Orchestrates the full pipeline.
 │
-├── data.py              FBref scraper via soccerdata. Fetches today's fixtures
-│                        and builds the stats dict (form, H2H, averages,
-│                        standings). Uses difflib fuzzy matching for team names.
+├── data.py              Sofascore data layer (REST API, no browser). Fetches
+│                        today's fixtures by exact tournament ID and builds the
+│                        stats dict (form, H2H, averages, standings). Uses
+│                        difflib fuzzy matching for team names only.
 │
 ├── model.py             Dixon-Coles Poisson model. Computes λ_home / λ_away,
 │                        builds a 9×9 score matrix, derives all market outputs.
@@ -353,8 +417,9 @@ footballAnalizer/
 │                        handler. Imported as `from logger import log`.
 │
 ├── backtest/
-│   ├── runner.py        Main engine. Iterates league × season, builds rolling
-│   │                    stats (no data leakage), calls model, runs strategies.
+│   ├── runner.py        Main engine. Fetches historical data from FBref (not
+│   │                    Sofascore — see Backtesting), builds rolling stats
+│   │                    (no data leakage), calls model, runs strategies.
 │   ├── strategies.py    Four betting strategies: threshold/value × fixed/Kelly.
 │   ├── metrics.py       Calibration bins + per-strategy P&L metrics.
 │   └── exporter.py      Writes three CSV files and prints a console summary.
@@ -389,6 +454,8 @@ home_defense = home_goals_conceded_avg / league_avg_away
 away_attack  = away_goals_scored_avg  / league_avg_away
 away_defense = away_goals_conceded_avg / league_avg_home
 ```
+
+When a team's averages are unavailable (Sofascore returned no data for them), the model falls back to league-average strength (ratio of 1.0) for that side rather than failing outright. League-wide averages themselves fall back to `1.5` (home) / `1.2` (away) goals per game when Sofascore's own season data can't be fetched.
 
 ### Dixon-Coles correction
 
@@ -426,20 +493,28 @@ Ollama is not running. Start it with `ollama serve` or `sudo systemctl start oll
 
 The model specified in `OLLAMA_MODEL` has not been pulled. Run `ollama pull llama3.1:8b` (or whichever model you configured).
 
-**No matches found today**
+**`Found 0 matches today` from the live pipeline**
 
-FBref coverage for some competitions lags by a day, or the competition is in its off-season. The agent logs the exact failure per competition at `WARNING` level — check `logs/football_agent.log`.
+First check whether it's actually off-season for all 11 tracked competitions (European top flights typically run August–May; MLS and Liga MX run on different calendars). Run `python data.py` directly to see the raw count and check `logs/football_agent.log` at `WARNING`/`ERROR` level for the underlying cause if it's not simply off-season — e.g. "Sofascore unreachable" means the API itself couldn't be reached, not that there were no fixtures.
+
+**A match shows the wrong competition / wrong league**
+
+This would mean a `uniqueTournament` ID changed or was mismapped. Verify the ID against `https://api.sofascore.com/api/v1/category/{category_id}/unique-tournaments` and update `COMPETITIONS` in `data.py` — see [Data Source — Sofascore](#data-source--sofascore).
+
+**`Chrome not found!` (only relevant to backtesting)**
+
+The live pipeline (`data.py`) doesn't use Chrome at all — Sofascore is fetched over plain HTTPS. This error can only come from `run_backtest.py`, which still depends on FBref's Selenium-based scraper. Install Google Chrome and make sure `soccerdata`/`undetected-chromedriver` can find it; on a headless VPS, install Chrome anyway (no display is required, only the binary).
 
 **Telegram messages not arriving**
 
 Confirm `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are correct. For group chats, make sure the bot has been added to the group and has permission to send messages. Channel IDs require the `-100` prefix.
 
-**soccerdata rate-limit errors**
+**Sofascore rate-limit / repeated timeouts**
 
-FBref imposes rate limits. The code already adds `time.sleep(2)` between requests. If you hit limits repeatedly, increase the sleep in `data.py` or run during off-peak hours. FBref data is cached locally in `~/.soccerdata/`.
+`data.py` already sleeps 2 seconds between consecutive Sofascore calls. If you still hit limits (heavy use, shared VPS IP with other Sofascore traffic), space out retries further or run the pipeline less frequently. There's no local cache for live data — every run fetches fresh.
 
 ---
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License.
