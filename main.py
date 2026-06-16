@@ -1,7 +1,4 @@
 import asyncio
-import json
-import pandas as pd
-from datetime import date
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -26,18 +23,19 @@ async def analyze_single_match(match: dict) -> bool:
             match["season"],
             home_id=match.get("home_id", ""),
             away_id=match.get("away_id", ""),
+            espn_id=match.get("espn_id", ""),
             match_data=match
         )
 
         probabilities = calculate_poisson_probabilities(stats)
-        analysis = generate_analysis(match, stats, probabilities)
+        analysis      = generate_analysis(match, stats, probabilities)
         await send_match_analysis(match, stats, probabilities, analysis)
 
         log.info(f"Done: {match['home']} vs {match['away']}")
         return True
 
     except Exception as e:
-        log.error(f"Failed to analyze {match['home']} vs {match['away']}: {e}")
+        log.error(f"Failed {match['home']} vs {match['away']}: {e}")
         return False
 
 
@@ -67,7 +65,7 @@ async def daily_pipeline():
 
     except Exception as e:
         log.error(f"Pipeline error: {e}")
-        await send_error_notification(f"Error critico en el pipeline: {e}")
+        await send_error_notification(f"Error critico: {e}")
 
     log.info(f"=== Pipeline done: {success} success, {failed} failed ===")
 
@@ -82,7 +80,6 @@ async def main():
     )
     scheduler.start()
     log.info("Scheduler running. Next execution at 8:00 AM CST.")
-
     log.info("Running pipeline immediately for initial test...")
     await daily_pipeline()
 
